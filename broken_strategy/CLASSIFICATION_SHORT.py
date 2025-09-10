@@ -1,5 +1,5 @@
 # ==============================================================================
-# Scout_Model_Trainer_REGRESSION_SHORT.py
+# CLASSIFICATION_SHORT.py
 # ------------------------------------------------------------------------------
 # ЗАДАЧА: Обучить, оценить и сохранить лучшую РЕГРЕССИОННУЮ модель-"Разведчика",
 # которая предсказывает РАЗМЕР движения после сетапа "London sweeps Asia".
@@ -20,7 +20,7 @@ from sklearn.metrics import mean_absolute_error
 
 # Импортируем НОВЫЙ класс для регрессии
 from trading_tools import (
-    LiquidityMLRegressor,
+    LiquidityMLModel,
     FeatureEngineSMC,
     prepare_master_dataframe,
     START_DATE,
@@ -33,7 +33,7 @@ warnings.filterwarnings('ignore')
 
 # --- 1. НАСТРОЙКИ И КОНСТАНТЫ ---
 MODEL_TYPE = 'SHORT'
-N_TRAILS_MAE = 75  # Количество попыток для поиска лучшей регрессионной модели
+N_TRAILS_MAE = 200  # Количество попыток для поиска лучшей регрессионной модели
 
 
 def set_seed(seed=33):
@@ -70,7 +70,7 @@ def objective_mae_cv(trial, X_train_full, y_train_full):
         X_train_fold, X_val_fold = X_train_full.iloc[train_index], X_train_full.iloc[val_index]
         y_train_fold, y_val_fold = y_train_full.iloc[train_index], y_train_full.iloc[val_index]
 
-        model = LiquidityMLRegressor(params=model_params)
+        model = LiquidityMLModel(params=model_params)
         model.train(X_train_fold, y_train_fold)
 
         predictions = model.predict(X_val_fold)
@@ -82,43 +82,59 @@ def objective_mae_cv(trial, X_train_full, y_train_full):
 
 # --- 3. ОСНОВНОЙ БЛОК ВЫПОЛНЕНИЯ ---
 if __name__ == "__main__":
+    # Установка seed для воспроизводимости и загрузка переменных
     set_seed(33)
     load_dotenv()
 
-    # --- ЭТАП 1: ЗАГРУЗКА ДАННЫХ ---
+    # --- ЭТАП 1: ЗАГРУЗКА И ПОДГОТОВКА ДАННЫХ ---
+    print("\n--- ЭТАП 1: ЗАГРУЗКА И ПОДГОТОВКА ДАННЫХ ---")
     final_df, df_30m, df_15m, df_5m, df_1m = prepare_master_dataframe(START_DATE, TICKER, DOWNLOAD_DATA)
 
-    # --- ЭТАП 2: СОЗДАНИЕ ПРИЗНАКОВ И ФИЛЬТРАЦИЯ ---
-    print("\n--- ЭТАП 2: СОЗДАНИЕ ПРИЗНАКОВ И ФИЛЬТРАЦИЯ ДАННЫХ ---")
-    feature_engine = FeatureEngineSMC(final_df, df_30m, df_5m, df_1m)
-    X, y, _ = feature_engine.run(model_type=MODEL_TYPE, create_target=True)
+    # --- ЭТАП 2: ИНЖИНИРИНГ ПРИЗНАКОВ И ФИЛЬТРАЦИЯ ---
+    print("\n--- ЭТАП 2: ИНЖИНИРИНГ ПРИЗНАКОВ И ФИЛЬТРАЦИЯ ДАННЫХ ---")
 
-    # КЛЮЧЕВОЙ ШАГ: Мы будем обучать модель ТОЛЬКО на тех данных, где был сетап
-    # Убираем все строки, где y = NaN
-    valid_indices = y.dropna().index
-    X_filtered = X.loc[valid_indices]
-    y_filtered = y.loc[valid_indices]
+    # 2.1. Создаем признаки. В 'y' будет много NaN, так как мы размечали только качественные сетапы.
+    feature_engine = FeatureEngineSMC(final_df, ltf_df_30m=df_30m, ltf_df_5m=df_5m, ltf_df_1m=df_1m)
+    X, y, df_with_features = feature_engine.run(model_type=MODEL_TYPE, create_target=True)
 
-    print(f"Отфильтровано {len(X_filtered)} событий для обучения регрессионной модели.")
+    # 2.2. Фильтруем "мусор": оставляем только строки с качественными сигналами.
+    print(f"\nИсходный размер данных: {len(X)} свечей.")
 
-    if len(X_filtered) < 50:
-        print("❌ Слишком мало данных для обучения. Скрипт остановлен.")
+    full_dataset = X.copy()
+    full_dataset['target'] = y
+    full_dataset.dropna(subset=['target'], inplace=True)  # Удаляем строки, где нет качественного сетапа
+
+    print(f"Размер данных после фильтрации: {len(full_dataset)} качественных сигналов.")
+
+    # Проверяем, осталось ли достаточно данных для работы
+    if len(full_dataset) < 50:
+        print("❌ КРИТИЧЕСКАЯ ОШИБКА: Слишком мало данных для обучения после фильтрации.")
+        print("   Попробуйте уменьшить значение 'min_target_r' в файле trading_tools.py.")
         exit()
 
-    X_train_full, X_test, y_train_full, y_test = train_test_split(
-        X_filtered, y_filtered, test_size=0.3, shuffle=False
-    )
+    # Разделяем очищенные данные обратно на признаки (X) и цель (y)
+    X_filtered = full_dataset.drop(columns=['target'])
+    y_filtered = full_dataset['target']
 
-    # --- ЭТАП 3: ПОИСК ЛУЧШЕЙ РЕГРЕССИОННОЙ МОДЕЛИ ---
+    # 2.3. Делим ОЧИЩЕННЫЕ данные на обучающую и тестовую выборки.
+    # Это единственное разделение, которое нам нужно.
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_filtered, y_filtered, test_size=0.2, shuffle=False, random_state=33
+    )
+    print(f"Данные разделены: {len(X_train)} для обучения, {len(X_test)} для теста.")
+
+    # --- ЭТАП 3: ОПТИМИЗАЦИЯ ГИПЕРПАРАМЕТРОВ (OPTUNA) ---
     print(f"\n--- ЭТАП 3: ПОИСК ЛУЧШЕЙ РЕГРЕССИОННОЙ МОДЕЛИ ({MODEL_TYPE}) ---")
-    study = optuna.create_study(direction='minimize')  # МИНИМИЗИРУЕМ ошибку
-    study.optimize(lambda trial: objective_mae_cv(trial, X_train_full, y_train_full), n_trials=N_TRAILS_MAE)
+
+    study = optuna.create_study(direction='minimize')  # Мы минимизируем ошибку (MAE)
+    # Передаем в Optuna ТОЛЬКО обучающую выборку (X_train, y_train) для поиска лучших параметров
+    study.optimize(lambda trial: objective_mae_cv(trial, X_train, y_train), n_trials=N_TRAILS_MAE)
 
     best_model_hyperparams = study.best_params
     print("\n✅ Оптимизация завершена!")
     print("🔥 Лучшие гиперпараметры для РЕГРЕССОРА найдены:", best_model_hyperparams)
 
-    # Сохраняем параметры в JSON
+    # Сохраняем лучшие параметры в файл
     params_filename = f"regression_params_{MODEL_TYPE}_{safe_ticker}.json"
     with open(params_filename, 'w') as f:
         json.dump(best_model_hyperparams, f, indent=4)
@@ -126,21 +142,26 @@ if __name__ == "__main__":
 
     # --- ЭТАП 4: ФИНАЛЬНОЕ ОБУЧЕНИЕ И ОЦЕНКА ---
     print("\n--- ЭТАП 4: ФИНАЛЬНОЕ ОБУЧЕНИЕ И ОЦЕНКА РЕГРЕССОРА ---")
-    final_model = LiquidityMLRegressor(params=best_model_hyperparams)
+
+    # Создаем финальную модель с лучшими найденными параметрами
+    final_model = LiquidityMLModel(params=best_model_hyperparams)
+
     print("Обучение финальной модели на полном наборе тренировочных данных...")
-    final_model.train(X_train_full, y_train_full)
+    # Обучаем модель на тех же данных, что и Optuna (X_train, y_train)
+    final_model.train(X_train, y_train)
 
     model_filename = f"regressor_model_{MODEL_TYPE}_{safe_ticker}.pkl"
     final_model.save_model(model_filename)
 
-    # Оцениваем точность на невидимых данных (X_test)
+    # Оцениваем точность на НЕВИДИМЫХ данных (X_test, y_test), которые модель никогда не видела
+    print("\nОценка итоговой модели на тестовых (невидимых) данных:")
     results_df = final_model.evaluate(X_test, y_test)
 
     # --- ЭТАП 5: ВИЗУАЛИЗАЦИЯ РЕЗУЛЬТАТОВ ---
     print("\n--- ЭТАП 5: ВИЗУАЛИЗАЦИЯ ТОЧНОСТИ ПРЕДСКАЗАНИЙ ---")
     fig = go.Figure()
 
-    # Scatter plot: Реальность vs Предсказание
+    # График рассеяния: Реальные значения vs Предсказанные значения
     fig.add_trace(go.Scatter(
         x=results_df['y_true'],
         y=results_df['y_pred'],
@@ -149,7 +170,7 @@ if __name__ == "__main__":
         marker=dict(color='rgba(100, 181, 246, 0.7)', line=dict(width=1, color='DarkSlateGrey'))
     ))
 
-    # Линия идеального предсказания (y=x)
+    # Линия, показывающая идеальное предсказание (где реальность = предсказание)
     fig.add_trace(go.Scatter(
         x=[results_df['y_true'].min(), results_df['y_true'].max()],
         y=[results_df['y_true'].min(), results_df['y_true'].max()],
@@ -165,6 +186,7 @@ if __name__ == "__main__":
         template='plotly_dark'
     )
 
-    plot_filename = f'regression_accuracy_plot_{MODEL_TYPE}.html'
+    plot_filename = f'regression_accuracy_plot_{MODEL_TYPE}_{safe_ticker}.html'
     fig.write_html(plot_filename)
     print(f"✅ График точности сохранен в файл: {plot_filename}")
+

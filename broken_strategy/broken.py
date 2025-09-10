@@ -25,17 +25,6 @@ TICKER = 'SUI/USDT'
 safe_ticker = TICKER.replace('/', '_')
 DOWNLOAD_DATA = False # True Загрузка новых данных / False данные из кэша
 
-# --- НАСТРОЙКИ БЭКТЕСТА ---
-CONFIDENCE_THRESHOLD = 0.7
-RISK_TO_REWARD = 4.0
-STOP_LOSS_ATR = 1.0
-TREND_FILTER_THRESHOLD = 0.5
-LOOK_FORWARD = 8
-TRESHOLD_PCT = 0.03
-
-
-
-
 
 class DataHandler:
     """
@@ -49,7 +38,7 @@ class DataHandler:
         self.start_date = start_date
         self.exchange = ccxt.bybit({'options': {'defaultType': 'swap', 'defaultSubType': 'linear'}})
         self.safe_symbol = symbol.replace('/', '_')
-        self.cache_dir = "data_cache"
+        self.cache_dir = "../data_cache"
         self.cache_filepath = os.path.join(
             self.cache_dir,
             f"{self.safe_symbol}_{self.timeframe}_{self.start_date.split('T')[0]}.parquet"
@@ -172,6 +161,34 @@ class DataHandler:
 
             return self._validate_and_save(df)
 
+# --------------------------<Загрузка данных по доминации биткоина>----------------------------------------
+
+    #
+    #     # 3. Скачиваем данные с пагинацией (как в DataHandler)
+    #     while True:
+    #         ohlcv = binance.fetch_ohlcv('BTCDOMUSDT', '1h', since, limit)
+    #         if len(ohlcv):
+    #             since = ohlcv[-1][0] + (binance.parse_timeframe('1h') * 1000)
+    #             all_ohlcv.extend(ohlcv)
+    #             if len(ohlcv) < limit:
+    #                 break
+    #         else:
+    #             break
+    #
+    #     # 4. Преобразуем в DataFrame
+    #     if all_ohlcv:
+    #         df_dom = pd.DataFrame(all_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    #         df_dom['timestamp'] = pd.to_datetime(df_dom['timestamp'], unit='ms')
+    #         df_dom.set_index('timestamp', inplace=True)
+    #         df_dom = df_dom[['close']].rename(columns={'close': 'btc_dominance'})
+    #         print(f"✅ Индекс доминации BTC успешно загружен. Записей: {len(df_dom)}")
+    #     else:
+    #         print("⚠️ Не удалось загрузить индекс доминации BTC (данные не получены).")
+    #
+    # except Exception as e:
+    #     print(f"❌ Критическая ошибка при загрузке доминации BTC: {e}")
+
+# --------------------------</Загрузка данных по доминации биткоина завершена>----------------------------------------
 
 # ---------------------< ЗАГРУЗКА И ПОДГОТОВКА ДАННЫХ >------------------------
 
@@ -213,7 +230,6 @@ def prepare_master_dataframe(start_date, ticker, download_data):
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
     df_fng = fetch_fear_and_greed_index(limit=0)
-    df_btc_dom = fetch_btc_dominance(start_date)
     # ----------------</ Этап 1: Загрузка данных завершена>-----------------------
 
     # ----------------< Этап 2: Инжиниринг Признаков >-----------------------
@@ -262,9 +278,6 @@ def prepare_master_dataframe(start_date, ticker, download_data):
     if not df_fng.empty:
         final_df = pd.merge_asof(final_df, df_fng.rename(columns={'value': 'fear_greed_value'}), left_index=True,
                                  right_index=True, direction='backward')
-
-    if not df_btc_dom.empty:
-        final_df = pd.merge_asof(final_df, df_btc_dom, left_index=True, right_index=True, direction='backward')
     if not df_poc_h.empty:
         final_df = final_df.join(df_poc_h)
     if not df_poc_4h.empty:
@@ -280,52 +293,6 @@ def prepare_master_dataframe(start_date, ticker, download_data):
     return final_df, df_4h, df_30m, df_15m, df_5m, df_1m
 
 # ---------------------</ ЗАГРУЗКА И ПОДГОТОВКА ДАННЫХ ЗАВЕРШЕНА>------------------------
-
-
-# ----------------------<Загрузка данных по доминации биткоина>--------------------------
-
-def fetch_btc_dominance(start_date):
-    """
-    Загружает исторические данные по доминации BTC (BTCDOMUSDT) с Binance.
-    """
-    print("Загрузка индекса доминации BTC...")
-    try:
-        binance = ccxt.binance()
-        start_ts = binance.parse8601(f"{start_date}T00:00:00Z")
-        all_ohlcv = []
-        since = start_ts
-        limit = 1000
-
-        while True:
-            ohlcv = binance.fetch_ohlcv('BTCDOMUSDT', '1h', since, limit)
-            if not ohlcv: break
-            since = ohlcv[-1][0] + (binance.parse_timeframe('1h') * 1000)
-            all_ohlcv.extend(ohlcv)
-            if len(ohlcv) < limit: break
-            time.sleep(binance.rateLimit / 1000)
-
-        if not all_ohlcv:
-            print("⚠️ Не удалось загрузить индекс доминации BTC.")
-            return pd.DataFrame()
-
-        df_dom = pd.DataFrame(all_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df_dom['timestamp'] = pd.to_datetime(df_dom['timestamp'], unit='ms')
-        df_dom.set_index('timestamp', inplace=True)
-        # Нам нужна только цена закрытия
-        df_dom = df_dom[['close']].rename(columns={'close': 'btc_dominance'})
-        print(f"✅ Индекс доминации BTC успешно загружен. Записей: {len(df_dom)}")
-        return df_dom
-
-    except Exception as e:
-        print(f"❌ Критическая ошибка при загрузке доминации BTC: {e}")
-        return pd.DataFrame()
-
-# ----------------------</Загрузка данных по доминации биткоина завершена>----------------------
-
-
-
-
-
 
 # ---------------------<Загрузка индекса страха и жадности>------------------------
 
@@ -659,7 +626,7 @@ class FeatureEngineSMC:
 
     ]
     STATIC_FEATURES_SHORT = [
-        # 'market_structure_trend'
+        'market_structure_trend'
         # --- 1. КОНТЕКСТ СТАРШЕГО ТФ ---
         'trend_strength_4h',  # Глобальный тренд (мы выше/ниже 4H EMA?)
         'structure_state',  # Наш 1H BOS/CHoCH индикатор (мы в 1H ап- или даун-тренде?)
@@ -674,12 +641,11 @@ class FeatureEngineSMC:
         'delta', 'cvd', 'cvd_divergence', #'adx'
         # 'is_asian_session', 'is_london_session', 'is_newyork_session',
         # 'is_asian_killzone', 'is_london_killzone', 'is_newyork_killzone',
-        'hour_sin', 'hour_cos',
-        'day_sin', 'day_cos',
-        'combo_trend_x_cvd', 'combo_pdl_x_volume', 'combo_pdh_x_volume',# 'combo_htf_ltf_trend',
+        # 'hour_sin', 'hour_cos',
+        # 'day_sin', 'day_cos',
+        'combo_trend_x_cvd', 'combo_pdl_x_volume', 'combo_pdh_x_volume',
         'fear_greed_change_3d', 'fear_greed_value',
-        'dmp_dmn_diff',
-        'btc_dominance', 'btc_dominance_change_48h', 'btc_dominance_change_72h'
+
     ]
 
 
@@ -762,56 +728,120 @@ class FeatureEngineSMC:
 
         print(f"Найдено {len(self.significant_highs)} знач. максимумов и {len(self.significant_lows)} знач. минимумов.")
 
-
-    def _calculate_market_structure(self): # пройтись по всем найденным точкам свингов и определить, когда тренд бычий, а когда медвежий.
+    def _calculate_market_structure(self):
         """
-        Создает новый признак 'structure_state' (+1 для бычьего, -1 для медвежьего),
-        основываясь на последовательности 1H Swing Highs/Lows.
+        [ИСПРАВЛЕННАЯ ВЕРСИЯ - С ФИКСОМ ДУБЛИКАТОВ]
+        Определяет состояние рыночной структуры и количественную силу тренда.
         """
-        print("Расчет состояния рыночной структуры (BOS/CHoCH)...")
+        print("Расчет состояния рыночной структуры и силы тренда...")
 
-        # 1. Объединяем все точки свингов в один DataFrame
-        lows = pd.DataFrame({'price': self.df.loc[self.all_swing_low_timestamps, 'low']},
-                            index=self.all_swing_low_timestamps)
-        lows['type'] = -1  # -1 = Swing Low
-
-        highs = pd.DataFrame({'price': self.df.loc[self.all_swing_high_timestamps, 'high']},
-                             index=self.all_swing_high_timestamps)
-        highs['type'] = 1  # +1 = Swing High
-
-        swing_events = pd.concat([lows, highs]).sort_index()
-
-        if swing_events.empty:
-            print("ВНИМАНИЕ: Не найдено точек свинга, расчет структуры невозможен.")
-            self.df['structure_state'] = 0  # Заполняем нулем
+        if not hasattr(self, 'df_4h') or self.df_4h.empty:
+            print("⚠️ DataFrame 4H не найден. Расчет структурного тренда пропущен.")
+            self.df['market_structure_trend'] = 0
             return
 
-        # 2. Итерируем по событиям и определяем тренд (State Machine)
-        structure_state = 0  # 0 = Неопределен, +1 = Бычий, -1 = Медвежий
+        fractal_order = 3
+        low_indices = argrelextrema(self.df_4h['low'].values, np.less_equal, order=fractal_order)[0]
+        high_indices = argrelextrema(self.df_4h['high'].values, np.greater_equal, order=fractal_order)[0]
+
+        swing_lows = self.df_4h.iloc[low_indices]
+        swing_highs = self.df_4h.iloc[high_indices]
+
+        lows_df = pd.DataFrame({'price': swing_lows['low'], 'type': 'low'})
+        highs_df = pd.DataFrame({'price': swing_highs['high'], 'type': 'high'})
+
+        swing_events = pd.concat([lows_df, highs_df]).sort_index()
+
+        # --- ИСПРАВЛЕНИЕ ОШИБКИ ДУБЛИКАТОВ ---
+        swing_events = swing_events[~swing_events.index.duplicated(keep='first')]
+
+        if swing_events.empty:
+            self.df['market_structure_trend'] = 0
+            return
+
+        trend_counter = 0
         last_high = None
         last_low = None
 
-        # Создаем серию для хранения результатов (быстрее, чем .loc в цикле)
-        state_series = pd.Series(index=self.df.index, dtype='float64')
+        structure_series = pd.Series(index=swing_events.index, dtype=int)
 
         for timestamp, event in swing_events.iterrows():
-            if event['type'] == 1:  # Это Swing High
-                if last_high is not None and event['price'] > last_high:
-                    structure_state = 1  # Bullish BOS (Higher High)
+            if event['type'] == 'high':
+                if last_high is not None:
+                    if event['price'] > last_high:  # HH
+                        if trend_counter < 0:
+                            trend_counter = 1
+                        else:
+                            trend_counter = min(trend_counter + 1, 5)
+                    else:  # LH
+                        if trend_counter > 0: trend_counter = 0
                 last_high = event['price']
 
-            elif event['type'] == -1:  # Это Swing Low
-                if last_low is not None and event['price'] < last_low:
-                    structure_state = -1  # Bearish BOS / CHoCH (Lower Low)
+            elif event['type'] == 'low':
+                if last_low is not None:
+                    if event['price'] < last_low:  # LL
+                        if trend_counter > 0:
+                            trend_counter = -1
+                        else:
+                            trend_counter = max(trend_counter - 1, -5)
+                    else:  # HL
+                        if trend_counter < 0: trend_counter = 0
                 last_low = event['price']
 
-            # Записываем текущее состояние на момент события
-            state_series.loc[timestamp] = structure_state
+            structure_series.loc[timestamp] = trend_counter
 
-        # 3. Заполняем пропуски
-        # ffill() распространяет последнее состояние тренда до следующего события
-        self.df['structure_state'] = state_series.ffill().fillna(0)  # ffill + fillna(0) для самого начала
+        self.df['market_structure_trend'] = structure_series.reindex(self.df.index, method='ffill').fillna(0).astype(
+            int)
 
+    # def _calculate_market_structure(self): # пройтись по всем найденным точкам свингов и определить, когда тренд бычий, а когда медвежий.
+    #     """
+    #     Создает новый признак 'structure_state' (+1 для бычьего, -1 для медвежьего),
+    #     основываясь на последовательности 1H Swing Highs/Lows.
+    #     """
+    #     print("Расчет состояния рыночной структуры (BOS/CHoCH)...")
+    #
+    #     # 1. Объединяем все точки свингов в один DataFrame
+    #     lows = pd.DataFrame({'price': self.df.loc[self.all_swing_low_timestamps, 'low']},
+    #                         index=self.all_swing_low_timestamps)
+    #     lows['type'] = -1  # -1 = Swing Low
+    #
+    #     highs = pd.DataFrame({'price': self.df.loc[self.all_swing_high_timestamps, 'high']},
+    #                          index=self.all_swing_high_timestamps)
+    #     highs['type'] = 1  # +1 = Swing High
+    #
+    #     swing_events = pd.concat([lows, highs]).sort_index()
+    #
+    #     if swing_events.empty:
+    #         print("ВНИМАНИЕ: Не найдено точек свинга, расчет структуры невозможен.")
+    #         self.df['structure_state'] = 0  # Заполняем нулем
+    #         return
+    #
+    #     # 2. Итерируем по событиям и определяем тренд (State Machine)
+    #     structure_state = 0  # 0 = Неопределен, +1 = Бычий, -1 = Медвежий
+    #     last_high = None
+    #     last_low = None
+    #
+    #     # Создаем серию для хранения результатов (быстрее, чем .loc в цикле)
+    #     state_series = pd.Series(index=self.df.index, dtype='float64')
+    #
+    #     for timestamp, event in swing_events.iterrows():
+    #         if event['type'] == 1:  # Это Swing High
+    #             if last_high is not None and event['price'] > last_high:
+    #                 structure_state = 1  # Bullish BOS (Higher High)
+    #             last_high = event['price']
+    #
+    #         elif event['type'] == -1:  # Это Swing Low
+    #             if last_low is not None and event['price'] < last_low:
+    #                 structure_state = -1  # Bearish BOS / CHoCH (Lower Low)
+    #             last_low = event['price']
+    #
+    #         # Записываем текущее состояние на момент события
+    #         state_series.loc[timestamp] = structure_state
+    #
+    #     # 3. Заполняем пропуски
+    #     # ffill() распространяет последнее состояние тренда до следующего события
+    #     self.df['structure_state'] = state_series.ffill().fillna(0)  # ffill + fillna(0) для самого начала
+    #
 
 
 
@@ -910,9 +940,6 @@ class FeatureEngineSMC:
 
         # --- НОВЫЙ БЛОК: УСИЛЕНИЕ СИГНАЛА (КОМБИНИРОВАННЫЕ ПРИЗНАКИ) ---
         print("Создание комбинированных признаков для усиления сигнала...")
-        # Синергия Глобального и Локального тренда
-        if 'trend_strength_4h' in self.df.columns and 'structure_state' in self.df.columns:
-            self.df['combo_htf_ltf_trend'] = self.df['trend_strength_4h'] * self.df['structure_state']
 
         # 1. Синергия Тренда и Потока Ордеров
         # Этот признак будет сильно положительным, если и тренд, и CVD растут,
@@ -932,15 +959,129 @@ class FeatureEngineSMC:
             self.df['combo_pdh_x_volume'] = (1 / (abs(self.df['dist_to_static_pdh_atr']) + 0.1)) * self.df[
                 'volume_spike_ratio']
 
-        # Создаем признак динамики доминации
-        if 'btc_dominance' in self.df.columns:
-            self.df['btc_dominance_change_48h'] = self.df['btc_dominance'].pct_change(periods=48)
-            self.df['btc_dominance_change_72h'] = self.df['btc_dominance'].pct_change(periods=72)
-
         # --- КОНЕЦ НОВОГО БЛОКА ---
-        self.df.fillna(method='ffill', inplace=True)
 
         print("Статические признаки рассчитаны.")
+
+    # --- РАЗДЕЛЕННЫЕ ФУНКЦИИ РАЗМЕТКИ ЦЕЛИ ---
+
+    # def _label_target_long(self):
+    #     """
+    #     [ЛОГИКА ИЗ СТАРОГО FeatureEngine_LONG]
+    #     Ищет паттерн "Rejection" на ключевом уровне ликвидности для ЛОНГА.
+    #     """
+    #     print("Разметка LONG-таргетов...")
+    #     df = self.df.copy()
+    #
+    #     pdl = df['static_pdl'].shift(1)
+    #     is_asian = df['is_asian_session'] == 1
+    #     daily_asian_low = df['low'].where(is_asian).groupby(df.index.date).transform('min')
+    #     asian_session_low = daily_asian_low.ffill()
+    #     is_london = df['is_london_session'] == 1
+    #     daily_london_low = df['low'].where(is_london).groupby(df.index.date).transform('min')
+    #     london_session_low = daily_london_low.ffill()
+    #
+    #     rejection_pdl = (df['low'] < pdl) & (df['close'] > pdl)
+    #     rejection_asian = (df['low'] < asian_session_low) & (df['close'] > asian_session_low) & ~is_asian
+    #     rejection_london = (df['low'] < london_session_low) & (df['close'] > london_session_low) & ~is_london
+    #
+    #     df['target'] = (rejection_pdl | rejection_asian | rejection_london).astype(int)
+    #
+    #
+    #     self.df['target'] = df['target'].shift(-1).fillna(0)
+
+    # ЗАМЕНИТЕ ВАШУ ФУНКЦИЮ _label_target_short НА ЭТУ ОБНОВЛЕННУЮ ВЕРСИЮ
+
+    # ПОЛНОСТЬЮ ЗАМЕНИТЕ ВАШУ ФУНКЦИЮ _label_target_short НА ЭТУ НОВУЮ, ФИНАЛЬНУЮ ВЕРСИЮ
+    # def _label_target_short(self, look_forward_bars=8, take_profit_multiple=2.0):
+    #     """
+    #     [ФИНАЛЬНАЯ ВЕРСИЯ - ЛОГИКА R:R]
+    #     Размечает цель на основе встроенного риска сетапа (Risk-to-Reward).
+    #     ATR больше не используется для постановки целей.
+    #
+    #     y = 1, если цена достигла TP (в N раз больше риска) раньше, чем SL.
+    #     y = 0, если цена достигла SL раньше, чем TP.
+    #     """
+    #     print(f"Разметка по паттерну 'Свип + Слом' с логикой R:R (TP = {take_profit_multiple}R)...")
+    #     df = self.df.copy()
+    #
+    #     # --- Блок 1: Определение уровней ликвидности (без изменений) ---
+    #     is_asian = (df['is_asian_session'] == 1)
+    #     asia_high = df['high'].where(is_asian).groupby(df.index.date).transform('max').ffill()
+    #     is_london = (df['is_london_session'] == 1)
+    #     london_high = df['high'].where(is_london).groupby(df.index.date).transform('max').ffill()
+    #     target_liquidity_level = pd.Series(float('nan'), index=df.index)
+    #     is_london_kz = (df['is_london_killzone'] == 1)
+    #     target_liquidity_level.loc[is_london_kz] = asia_high.shift(1)
+    #     is_newyork_kz = (df['is_newyork_killzone'] == 1)
+    #     daily_high_before_ny = pd.concat([asia_high, london_high]).groupby(level=0).max().shift(1)
+    #     target_liquidity_level.loc[is_newyork_kz] = daily_high_before_ny
+    #
+    #     final_target_class = pd.Series(float('nan'), index=df.index)
+    #     final_target_regr = pd.Series(float('nan'), index=df.index)
+    #
+    #     # --- Блок 2: Итерация по свечам для поиска паттерна ---
+    #     for i in range(1, len(df)):
+    #         current_timestamp = df.index[i]
+    #         current_high = df['high'].iloc[i]
+    #         prev_high = df['high'].iloc[i - 1]
+    #
+    #         liquidity_level = target_liquidity_level.iloc[i]
+    #         if pd.isna(liquidity_level): continue
+    #
+    #         # --- Шаг 1: Находим Свечу Свипа ---
+    #         if prev_high < liquidity_level and current_high >= liquidity_level:
+    #             sweep_candle = df.iloc[i]
+    #
+    #             # --- Шаг 2: Ищем Свечу Подтверждения ---
+    #             confirmation_window = df.iloc[i + 1: i + 1 + 4]
+    #             for j in range(len(confirmation_window)):
+    #                 confirmation_candle = confirmation_window.iloc[j]
+    #
+    #                 if confirmation_candle['close'] < sweep_candle['low']:
+    #                     # --- Шаг 3: РАСЧЕТ РИСКА И ЦЕЛЕЙ ---
+    #                     entry_candle_timestamp = confirmation_window.index[j]
+    #                     entry_price = confirmation_candle['close']
+    #
+    #                     # Стоп-лосс ставится за максимум свечи свипа.
+    #                     stop_loss_price = sweep_candle['high']
+    #
+    #                     # Риск (1R) - это расстояние от входа до стопа.
+    #                     risk_in_price = stop_loss_price - entry_price
+    #
+    #                     # Пропускаем сетапы со слишком большим или нелогичным риском
+    #                     if risk_in_price <= 0 or risk_in_price > entry_price * 0.1:  # Риск не более 10% от цены
+    #                         continue
+    #
+    #                     # Тейк-профит - это N рисков вниз от точки входа.
+    #                     take_profit_price = entry_price - (risk_in_price * take_profit_multiple)
+    #
+    #                     # --- Шаг 4: Проверяем исход в будущем ---
+    #                     future_window = df.loc[entry_candle_timestamp:].iloc[1: 1 + look_forward_bars]
+    #                     if future_window.empty: continue
+    #
+    #                     outcome = None
+    #                     for _, future_candle in future_window.iterrows():
+    #                         if future_candle['high'] >= stop_loss_price:
+    #                             outcome = 0;
+    #                             break  # Неудача
+    #                         if future_candle['low'] <= take_profit_price:
+    #                             outcome = 1;
+    #                             break  # Успех
+    #
+    #                     if outcome is not None:
+    #                         final_target_class.loc[entry_candle_timestamp] = outcome
+    #                         if outcome == 1:
+    #                             # Для "Снайпера" сохраняем достигнутое R:R
+    #                             final_target_regr.loc[entry_candle_timestamp] = take_profit_multiple
+    #
+    #                     break
+
+        # self.df['target_class'] = final_target_class
+        # self.df['target_regr'] = final_target_regr
+        # print(
+        #     f"Разметка завершена. Найдено {final_target_class.notna().sum()} событий. Успешных (y=1): {(final_target_class == 1).sum()}")
+
 
     def run(self, model_type: str, create_target: bool = False):
         """
@@ -955,10 +1096,8 @@ class FeatureEngineSMC:
 
         # --- ЭТАП 1: Предварительные расчеты ---
         print("Запуск Feature Engine...")
-        self._precalculate_swing_points()
-        self._find_significant_liquidity()
-        # self._precalculate_swing_points(fractal_order=5)
-        # self._find_significant_liquidity(rest_period_bars=24) # 2. <-- ДОБАВЬ ЭТОТ ВЫЗОВ (Фильтрует их)
+        self._precalculate_swing_points(fractal_order=5)
+        self._find_significant_liquidity(rest_period_bars=24) # 2. <-- ДОБАВЬ ЭТОТ ВЫЗОВ (Фильтрует их)
         self._calculate_market_structure()
         self._calculate_static_features()
 
