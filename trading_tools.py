@@ -26,15 +26,12 @@ safe_ticker = TICKER.replace('/', '_')
 DOWNLOAD_DATA = False # True Загрузка новых данных / False данные из кэша
 
 # --- НАСТРОЙКИ БЭКТЕСТА ---
-CONFIDENCE_THRESHOLD = 0.7
+CONFIDENCE_THRESHOLD = 0.65
 RISK_TO_REWARD = 4.0
 STOP_LOSS_ATR = 1.0
 TREND_FILTER_THRESHOLD = 0.5
 LOOK_FORWARD = 8
 TRESHOLD_PCT = 0.03
-
-
-
 
 
 class DataHandler:
@@ -220,7 +217,7 @@ def prepare_master_dataframe(start_date, ticker, download_data):
     print("\n--- ЭТАП 2: РАСЧЕТ СЛОЖНЫХ ПРИЗНАКОВ (POC, DELTA, HTF) ---")
 
     # <-- ШАГ 2.1: РАСЧЕТ ДЕЛЬТЫ И CVD (НОВЫЙ БЛОК) -->
-    # Используем 5-минутные данные для более точного расчета и агрегируем до 1 часа.
+    # # Используем 1-минутные данные для более точного расчета и агрегируем до 1 часа.
     if not df_1m.empty:
         df_delta_1h = add_proxy_delta_features(df_1m, timeframe='1H')
     else:
@@ -235,16 +232,27 @@ def prepare_master_dataframe(start_date, ticker, download_data):
     # <-- ШАГ 2.3: РАСЧЕТ HTF ПРИЗНАКОВ (КАК И РАНЬШЕ) -->
     features_4h = pd.DataFrame(index=df_4h.index)
     features_4h['ema_50_4h'] = df_4h.ta.ema(length=50)
+    features_4h['atr_14_4h'] = df_4h.ta.atr(length=14)
+
+    # -------------< НОВЫЙ БЛОК: РАСЧЕТ ДОЛГОСРОЧНОЙ ДЕЛЬТЫ >-----------------
+    print("Расчет долгосрочной Дельты (4H и 1D)...")
+
+    # Расчет для 4-часового ТФ
+    df_4h['delta_4h'] = np.where(df_4h['close'] > df_4h['open'], df_4h['volume'], -df_4h['volume'])
+    df_4h['cvd_4h'] = df_4h['delta_4h'].cumsum()
+
+    # Расчет для дневного ТФ
+    df_1d['delta_1d'] = np.where(df_1d['close'] > df_1d['open'], df_1d['volume'], -df_1d['volume'])
+    # ------------</ КОНЕЦ НОВОГО БЛОКА: РАСЧЕТ ДОЛГОСРОЧНОЙ ДЕЛЬТЫ >--------------
+
     adx_4h = df_4h.ta.adx(length=14)
     if adx_4h is not None and 'ADX_14' in adx_4h.columns:
         features_4h['adx_14_4h'] = adx_4h['ADX_14']
-    features_4h['atr_14_4h'] = df_4h.ta.atr(length=14)
+
 
     # ----------------< Этап 3: Сборка Финального DataFrame >--------------------
     print("\n--- ЭТАП 3: СБОРКА ФИНАЛЬНОГО 'final_df' ---")
 
-    # <-- ШАГ 3.1: ОСНОВА -->
-    # Начинаем с 1-часового ТФ, который будет нашей основной.
     final_df = df_1h.copy()
 
     # <-- ШАГ 3.2: ОБЪЕДИНЕНИЕ ДАННЫХ С ДЕЛЬТОЙ (НОВЫЙ БЛОК) -->
@@ -257,14 +265,28 @@ def prepare_master_dataframe(start_date, ticker, download_data):
         df_divergence = add_cvd_divergence(final_df, lookback=18)
         final_df = final_df.join(df_divergence)
 
+    # -----------< НОВЫЙ БЛОК: ИНТЕГРАЦИЯ ФУТПРИНТА >-----------
+    # Передаем df_1h и df_1m для анализа
+    # footprint_df = calculate_footprint_features(df_1h, df_1m)
+    # if not footprint_df.empty:
+    #     final_df = final_df.join(footprint_df)
+    # -----------</ КОНЕЦ НОВОГО БЛОКА: ИНТЕГРАЦИЯ ФУТПРИНТА >-----------
+
     # <-- ШАГ 3.3: ОБЪЕДИНЕНИЕ С ОСТАЛЬНЫМИ ПРИЗНАКАМИ (КАК И РАНЬШЕ) -->
     final_df = pd.merge_asof(final_df, features_4h, left_index=True, right_index=True, direction='backward')
+
     if not df_fng.empty:
         final_df = pd.merge_asof(final_df, df_fng.rename(columns={'value': 'fear_greed_value'}), left_index=True,
                                  right_index=True, direction='backward')
 
+    delta_features_4h = df_4h[['delta_4h', 'cvd_4h']]
+    delta_features_1d = df_1d[['delta_1d']]
+    final_df = pd.merge_asof(final_df, delta_features_4h, left_index=True, right_index=True, direction='backward')
+    final_df = pd.merge_asof(final_df, delta_features_1d, left_index=True, right_index=True, direction='backward')
     if not df_btc_dom.empty:
         final_df = pd.merge_asof(final_df, df_btc_dom, left_index=True, right_index=True, direction='backward')
+
+
     if not df_poc_h.empty:
         final_df = final_df.join(df_poc_h)
     if not df_poc_4h.empty:
@@ -322,9 +344,57 @@ def fetch_btc_dominance(start_date):
 
 # ----------------------</Загрузка данных по доминации биткоина завершена>----------------------
 
+# ---------------------< Гранулярные признаки потока ордеров (футпринт) >------------------------
+# --- ДОБАВЬТЕ ЭТУ НОВУЮ ФУНКЦИЮ ---
+def calculate_footprint_features(df_1h, df_1m):
+    """
+    Рассчитывает гранулярные признаки потока ордеров (футпринт),
+    используя 1-минутные данные для анализа каждой часовой свечи.
+    """
+    print("Расчет гранулярных футпринт-признаков...")
+    if df_1m.empty or df_1h.empty:
+        return pd.DataFrame(index=df_1h.index)
 
+    # Убедимся, что минутный DataFrame содержит нужные колонки
+    df_1m['delta'] = np.where(df_1m['close'] > df_1m['open'], df_1m['volume'], -df_1m['volume'])
 
+    # Создаем DataFrame для хранения результатов
+    footprint_features = pd.DataFrame(index=df_1h.index)
 
+    # Группируем минутные свечи по часам
+    grouped_by_hour = df_1m.groupby(pd.Grouper(freq='1H'))
+
+    # Рассчитываем признаки для каждой группы (для каждого часа)
+    footprint_features['granular_delta'] = grouped_by_hour['delta'].sum()
+
+    # Объем покупок vs продаж внутри часа
+    buy_volume = grouped_by_hour.apply(lambda x: x[x['delta'] > 0]['volume'].sum())
+    sell_volume = grouped_by_hour.apply(lambda x: abs(x[x['delta'] < 0]['volume'].sum()))
+    footprint_features['aggression_ratio'] = buy_volume / (sell_volume + 1e-9)  # Коэффициент агрессии
+
+    # Анализ теней (истощение)
+    def get_wick_volume(group):
+        h_open, h_close = group['open'].iloc[0], group['close'].iloc[-1]
+        body_max = max(h_open, h_close)
+        body_min = min(h_open, h_close)
+
+        upper_wick_vol = group[group['high'] > body_max]['volume'].sum()
+        lower_wick_vol = group[group['low'] < body_min]['volume'].sum()
+        return upper_wick_vol, lower_wick_vol
+
+    wick_volumes = grouped_by_hour.apply(get_wick_volume)
+    footprint_features['upper_wick_volume'] = wick_volumes.apply(lambda x: x[0])
+    footprint_features['lower_wick_volume'] = wick_volumes.apply(lambda x: x[1])
+    footprint_features['exhaustion_ratio'] = footprint_features['upper_wick_volume'] / (
+                footprint_features['lower_wick_volume'] + 1e-9)
+
+    # Рассчитываем гранулярную кумулятивную дельту
+    footprint_features['granular_cvd'] = footprint_features['granular_delta'].cumsum()
+
+    print("✅ Расчет футпринт-признаков завершен.")
+    return footprint_features
+
+# ---------------------</ Гранулярные признаки потока ордеров (футпринт) >------------------------
 
 
 # ---------------------<Загрузка индекса страха и жадности>------------------------
@@ -654,32 +724,30 @@ class FeatureEngineSMC:
         # 'is_asian_session', 'is_london_session', 'is_newyork_session',
         # 'is_asian_killzone', 'is_london_killzone', 'is_newyork_killzone',
         # 'hour_sin', 'hour_cos', 'day_sin', 'day_cos','fear_greed_value',
-        'combo_trend_x_cvd', 'combo_pdl_x_volume', 'combo_pdh_x_volume',
-        'fear_greed_change_3d', 'fear_greed_value',
+        # 'combo_trend_x_cvd', 'combo_pdl_x_volume', 'combo_pdh_x_volume',
+        # 'fear_greed_change_3d', 'fear_greed_value',
 
     ]
     STATIC_FEATURES_SHORT = [
-        # 'market_structure_trend'
         # --- 1. КОНТЕКСТ СТАРШЕГО ТФ ---
-        'trend_strength_4h',  # Глобальный тренд (мы выше/ниже 4H EMA?)
-        'structure_state',  # Наш 1H BOS/CHoCH индикатор (мы в 1H ап- или даун-тренде?)
-        # --- 2. VSA-КОНТЕКСТ (все еще полезен) ---
-        'dynamic_vol_ratio',  # VSA-подтверждение (наш 1M Vol Ratio)
-        'volume_spike_ratio',  # Всплеск 1H объема
-        # --- 3. КОНТЕКСТ ЛИКВИДНОСТИ ---
+        'trend_strength_4h',
+        'structure_state',
+        'dynamic_vol_ratio',
+        'volume_spike_ratio',
         'dist_to_static_pdh_atr', 'dist_to_static_pdl_atr',
         # --- 4. КОНТЕКСТ СВЕЧИ ---
-        'bearish_rejection_power', # 'bullish_rejection_power' # Форма 1Ч свечи (важно для sweep)
-        # --- 5. КЛЮЧЕВЫЕ ПРИЗНАКИ ДЛЯ ЭТОЙ ЗАДАЧИ ---
-        'delta', 'cvd', 'cvd_divergence', #'adx'
-        # 'is_asian_session', 'is_london_session', 'is_newyork_session',
-        # 'is_asian_killzone', 'is_london_killzone', 'is_newyork_killzone',
+        'bearish_rejection_power', 'bullish_rejection_power' # Форма 1Ч свечи (важно для sweep)
         'hour_sin', 'hour_cos',
         'day_sin', 'day_cos',
-        'combo_trend_x_cvd', 'combo_pdl_x_volume', 'combo_pdh_x_volume',# 'combo_htf_ltf_trend',
+        'combo_trend_x_cvd', 'combo_pdl_x_volume', 'combo_pdh_x_volume', 'combo_htf_ltf_trend',
         'fear_greed_change_3d', 'fear_greed_value',
         'dmp_dmn_diff',
-        'btc_dominance', 'btc_dominance_change_48h', 'btc_dominance_change_72h'
+        # 'delta', 'cvd', 'cvd_divergence',
+        # 'granular_delta', 'granular_cvd', 'aggression_ratio', 'exhaustion_ratio',
+        'delta_4h',  # <-- НОВЫЙ
+        'cvd_4h',  # <-- НОВЫЙ
+        'delta_1d'
+        # 'btc_dominance', 'btc_dominance_change_48h', 'btc_dominance_change_72h'
     ]
 
 

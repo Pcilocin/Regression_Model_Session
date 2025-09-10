@@ -1,3 +1,5 @@
+# Market_Scanner_Model_Short.py
+
 import pandas as pd
 import json
 import joblib
@@ -12,7 +14,7 @@ from trading_tools import (
     safe_ticker,
     DOWNLOAD_DATA,
     TRESHOLD_PCT,
-    LOOK_FORWARD
+    LOOK_FORWARD,
 )
 
 # Добавьте остальные ваши импорты

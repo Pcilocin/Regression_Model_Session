@@ -14,14 +14,13 @@ from backtesting_engine import (
     RISK_TO_REWARD,
     STOP_LOSS_ATR,
     TREND_FILTER_THRESHOLD,
-    LOOK_FORWARD,
-    TRESHOLD_PCT,
 )
 
 
 # --- 1. КОНСТАНТЫ И НАСТРОЙКИ ---
 MODEL_TYPE = 'SHORT'  # Укажите, какую модель тестируем: 'SHORT' или 'LONG'
-MODEL_FILENAME = f"scanner_model_{MODEL_TYPE}_{safe_ticker}.pkl"  # Имя файла с обученной моделью
+# MODEL_FILENAME = f"scanner_model_{MODEL_TYPE}_{safe_ticker}.pkl"  # Имя файла с обученной моделью
+MODEL_FILENAME = f"expert_model_{MODEL_TYPE}_{safe_ticker}.pkl"  # Имя файла с обученной моделью
 
 
 if __name__ == "__main__":
@@ -73,7 +72,7 @@ if __name__ == "__main__":
         confidence_threshold=CONFIDENCE_THRESHOLD,
         risk_to_reward=RISK_TO_REWARD,
         stop_loss_atr_multiplier=STOP_LOSS_ATR,
-        trend_structure_threshold=TREND_FILTER_THRESHOLD # <-- ПЕРЕДАЕМ НОВЫЙ ПАРАМЕТР
+        trend_filter_threshold=TREND_FILTER_THRESHOLD # <-- ПЕРЕДАЕМ НОВЫЙ ПАРАМЕТР
     )
 
     # --- ЭТАП 3: ВЫВОД РЕЗУЛЬТАТОВ ---
